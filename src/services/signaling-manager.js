@@ -1,90 +1,84 @@
-
-// Manages multiple signaling options with fallbacks
-import wsSignaling from './signaling';
-import firebaseSignaling from './firebase-signaling';
+import { db } from '../firebase';
+import { collection, doc, addDoc, onSnapshot, query, where, orderBy, limit, serverTimestamp } from 'firebase/firestore';
 
 class SignalingManager {
   constructor() {
-    this.primarySignaling = wsSignaling;
-    this.fallbackSignaling = firebaseSignaling;
-    this.activeSignaling = null;
-    this.handlers = new Map();
+    this.roomId = null;
+    this.userId = null;
+    this.onMessageCallback = null;
+    this.unsubscribe = null;
   }
-
+  
   async connect() {
-    try {
-      // Try WebSocket first
-      await this.primarySignaling.connect();
-      this.activeSignaling = this.primarySignaling;
-      console.log("Using WebSocket signaling");
-      return true;
-    } catch (error) {
-      console.warn("WebSocket signaling failed, falling back to Firebase:", error);
-      
-      try {
-        // Fall back to Firebase
-        await this.fallbackSignaling.connect();
-        this.activeSignaling = this.fallbackSignaling;
-        console.log("Using Firebase signaling fallback");
-        return true;
-      } catch (fallbackError) {
-        console.error("All signaling methods failed:", fallbackError);
-        throw new Error("Failed to establish signaling connection");
-      }
-    }
+    // Firebase is already initialized, so we're ready
+    console.log("Signaling manager connected");
+    return true;
   }
-
+  
   async joinRoom(roomId, userId) {
-    if (!this.activeSignaling) {
-      await this.connect();
+    if (this.unsubscribe) {
+      this.unsubscribe();
     }
     
-    return this.activeSignaling.joinRoom(roomId, userId);
-  }
-
-  sendMessage(message) {
-    if (!this.activeSignaling) {
-      console.error("No active signaling connection");
-      return false;
-    }
+    this.roomId = roomId;
+    this.userId = userId;
     
-    return this.activeSignaling.sendMessage(message);
-  }
-
-  on(messageType, handler) {
-    // Store handlers locally
-    if (!this.handlers.has(messageType)) {
-      this.handlers.set(messageType, new Set());
-    }
-    this.handlers.get(messageType).add(handler);
+    // Listen for signaling messages
+    const signalingQuery = query(
+      collection(db, 'rooms', this.roomId, 'signaling'),
+      orderBy('timestamp', 'asc')
+    );
     
-    // Register with both signaling systems
-    const wsUnsubscriber = this.primarySignaling.on(messageType, handler);
-    const fbUnsubscriber = this.fallbackSignaling.on(messageType, handler);
-    
-    // Return combined unsubscribe function
-    return () => {
-      wsUnsubscriber();
-      fbUnsubscriber();
-      
-      const handlers = this.handlers.get(messageType);
-      if (handlers) {
-        handlers.delete(handler);
-        if (handlers.size === 0) {
-          this.handlers.delete(messageType);
+    this.unsubscribe = onSnapshot(signalingQuery, (snapshot) => {
+      snapshot.docChanges().forEach((change) => {
+        if (change.type === 'added') {
+          const message = change.doc.data();
+          
+          // Don't process own messages
+          if (message.from !== this.userId && this.onMessageCallback) {
+            this.onMessageCallback(message);
+          }
         }
-      }
-    };
+      });
+    });
+    
+    console.log(`Joined signaling room: ${roomId}`);
+    return true;
   }
-
-  disconnect() {
-    if (this.activeSignaling) {
-      this.activeSignaling.disconnect();
-      this.activeSignaling = null;
+  
+  async sendMessage(message) {
+    if (!this.roomId) {
+      console.error("Not connected to a room");
+      return;
     }
+    
+    try {
+      await addDoc(collection(db, 'rooms', this.roomId, 'signaling'), {
+        ...message,
+        timestamp: serverTimestamp()
+      });
+      
+      console.log(`Sent signaling message: ${message.type}`);
+    } catch (error) {
+      console.error("Error sending signaling message:", error);
+    }
+  }
+  
+  onMessage(callback) {
+    this.onMessageCallback = callback;
+  }
+  
+  leaveRoom() {
+    if (this.unsubscribe) {
+      this.unsubscribe();
+      this.unsubscribe = null;
+    }
+    
+    this.roomId = null;
+    this.userId = null;
+    console.log("Left signaling room");
   }
 }
 
-// Create singleton instance
 const signalingManager = new SignalingManager();
 export default signalingManager;
