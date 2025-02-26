@@ -70,7 +70,11 @@ const ChatRoom = ({ user }) => {
       (callData) => {
         if (callData.status === 'calling' && !isVoiceCallActive && !isVideoCallActive) {
           // Show incoming call notification
-          setIncomingCall(callData);
+          console.log("Incoming call detected:", callData);
+          setIncomingCall({
+            ...callData,
+            offer: callData.offer // Make sure the offer is included
+          });
           // Play call sound
           playCallSound();
         } else if (callData.isActive === false) {
@@ -500,17 +504,38 @@ const ChatRoom = ({ user }) => {
     if (!callServiceRef.current) return;
     
     try {
+      // First, check if we need to update the call service type based on incoming call
+      if (incomingCall.isVideo && callServiceRef.current.isVideo === false) {
+        // Need to re-initialize as video call
+        console.log("Switching to video call service for incoming video call");
+        callServiceRef.current = initializeVideoCall(
+          roomId, 
+          user.uid, 
+          setRemoteStream, 
+          (status) => setCallStatus(status)
+        );
+      }
+
       // Get local media and mark as answered
       console.log("Starting media for accepted call");
-      const { localStream } = await callServiceRef.current.start();
+      const { localStream } = await callServiceRef.current.answer(incomingCall.offer);
       
       if (localVideoRef.current) {
         localVideoRef.current.srcObject = localStream;
         console.log("Local stream set to video element");
       }
       
+      // Set the appropriate call type
       setIsVoiceCallActive(true);
+      if (incomingCall.isVideo) {
+        setIsVideoCallActive(true);
+        setIsVideoEnabled(true);
+      }
+      
       setIncomingCall(null);
+      
+      // Update call status
+      setCallStatus('answered');
       
       // Update call metadata as active
       await updateCallMetadata(roomId, 'active');

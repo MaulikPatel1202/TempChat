@@ -79,6 +79,7 @@ export default class WebRTCService {
 
   async answerCall(remoteOffer) {
     try {
+      console.log("ANSWER CALL - Starting with remote offer:", remoteOffer);
       // Be more specific about audio constraints
       const constraints = {
         audio: {
@@ -128,10 +129,12 @@ export default class WebRTCService {
       await this.peerConnection.setRemoteDescription(
         new RTCSessionDescription(remoteOffer)
       );
+      console.log("Remote description set successfully");
 
       // Then create answer
       console.log("Creating answer");
       const answer = await this.peerConnection.createAnswer();
+      console.log("Answer created:", answer);
       console.log("Setting local description for answer");
       await this.peerConnection.setLocalDescription(answer);
       
@@ -179,6 +182,7 @@ export default class WebRTCService {
     };
 
     pc.ontrack = event => {
+      console.log("Remote track received:", event.track.kind, event.track.readyState);
       console.log("Remote track received:", event.streams);
       if (event.streams && event.streams[0]) {
         // Clear any existing tracks of the same kind from the remoteStream
@@ -199,6 +203,8 @@ export default class WebRTCService {
           this.onRemoteStream(this.remoteStream);
         }
       }
+      console.log("Remote stream now has tracks:", 
+        this.remoteStream.getTracks().map(t => `${t.kind}:${t.readyState}`).join(', '));
     };
 
     // Add these event listeners for better debugging

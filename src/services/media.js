@@ -32,12 +32,17 @@ export const uploadMedia = async (roomId, file) => {
 // Add these functions for call metadata
 export const sendCallMetadata = async (roomId, userId, callData) => {
   try {
-    await setDoc(doc(db, 'rooms', roomId, 'callMetadata', 'current'), {
+    // Make sure the offer is included in the call metadata if it exists
+    const metadata = {
       from: userId,
       timestamp: new Date(),
       isActive: true,
+      status: 'calling',
       ...callData
-    });
+    };
+    
+    console.log("Sending call metadata:", metadata);
+    await setDoc(doc(db, 'rooms', roomId, 'callMetadata', 'current'), metadata);
   } catch (error) {
     console.error("Error sending call metadata:", error);
   }
@@ -80,6 +85,13 @@ export const initializeVoiceCall = (roomId, userId, onRemoteStream, onCallStatus
     start: async () => {
       try {
         const result = await service.startCall();
+        
+        // Send the offer via call metadata so the recipient can use it to answer
+        await sendCallMetadata(roomId, userId, {
+          isVideo: false,
+          offer: result.offer
+        });
+        
         return result;
       } catch (error) {
         console.error("Failed to start voice call:", error);
@@ -140,6 +152,13 @@ export const initializeVideoCall = (roomId, userId, onRemoteStream, onCallStatus
     start: async () => {
       try {
         const result = await service.startCall();
+        
+        // Send the offer via call metadata so the recipient can use it to answer
+        await sendCallMetadata(roomId, userId, {
+          isVideo: true,
+          offer: result.offer
+        });
+        
         return result;
       } catch (error) {
         console.error("Failed to start video call:", error);
