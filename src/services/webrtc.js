@@ -49,18 +49,28 @@ export default class WebRTCService {
         audio: true,
         video: this.isVideo ? { width: 640, height: 480 } : false
       };
+
+      // Get user media first before creating peer connection
       this.localStream = await navigator.mediaDevices.getUserMedia(constraints);
-      this.peerConnection = this.createPeerConnection();
+      
+      // Create peer connection after we have the local stream
+      if (!this.peerConnection) {
+        this.peerConnection = this.createPeerConnection();
+        
+        // Add local tracks to the connection
+        this.localStream.getTracks().forEach(track => {
+          this.peerConnection.addTrack(track, this.localStream);
+        });
+      }
 
-      // Add local tracks.
-      this.localStream.getTracks().forEach(track => {
-        this.peerConnection.addTrack(track, this.localStream);
-      });
+      // IMPORTANT: Set remote description first - this is the correct order
+      console.log("Setting remote description from offer", remoteOffer);
+      await this.peerConnection.setRemoteDescription(
+        new RTCSessionDescription(remoteOffer)
+      );
 
-      // Set remote offer.
-      await this.peerConnection.setRemoteDescription(remoteOffer);
-
-      // Create answer.
+      // Then create answer
+      console.log("Creating answer");
       const answer = await this.peerConnection.createAnswer();
       await this.peerConnection.setLocalDescription(answer);
       
@@ -81,28 +91,60 @@ export default class WebRTCService {
         { urls: 'stun:stun.l.google.com:19302' },
         { urls: 'stun:stun1.l.google.com:19302' },
         { urls: 'stun:stun2.l.google.com:19302' },
-      ]
+        // Add TURN server for more reliable connections
+        {
+          urls: 'turn:numb.viagenie.ca',
+          credential: 'muazkh',
+          username: 'webrtc@live.com'
+        }
+      ],
+      iceCandidatePoolSize: 10
     };
+    
     const pc = new RTCPeerConnection(configuration);
-
+    
     pc.onicecandidate = event => {
       if (event.candidate) {
-        // Store candidates to be sent once connection is established
+        // Store candidates for later transmission
         this.candidates.push(event.candidate);
-        // In production, candidates would be sent via signaling channel
-        // This is now handled in the sendCallSignal function in media.js
+        console.log("New ICE candidate", event.candidate);
+      } else {
+        console.log("ICE gathering complete");
       }
     };
 
     pc.ontrack = event => {
-      event.streams[0].getTracks().forEach(track => {
-        this.remoteStream.addTrack(track);
-      });
-      if (this.onRemoteStream) {
-        this.onRemoteStream(this.remoteStream);
+      console.log("Remote track received:", event.streams);
+      if (event.streams && event.streams[0]) {
+        event.streams[0].getTracks().forEach(track => {
+          console.log("Adding remote track to remote stream:", track.kind);
+          this.remoteStream.addTrack(track);
+        });
+        
+        // Ensure the UI gets updated with the remote stream
+        if (this.onRemoteStream) {
+          console.log("Calling onRemoteStream with remote stream");
+          this.onRemoteStream(this.remoteStream);
+        }
       }
     };
 
+    // Add these event listeners for better debugging
+    pc.oniceconnectionstatechange = e => {
+      console.log("ICE connection state change:", pc.iceConnectionState);
+    };
+    
+    pc.onsignalingstatechange = e => {
+      console.log("Signaling state change:", pc.signalingState);
+    };
+
+    pc.onconnectionstatechange = e => {
+      console.log("Connection state change:", pc.connectionState);
+      if (pc.connectionState === 'connected' && this.onCallStatusChange) {
+        this.onCallStatusChange('connected');
+      }
+    };
+    
     return pc;
   }
 

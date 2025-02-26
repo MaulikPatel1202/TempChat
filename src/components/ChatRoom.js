@@ -99,22 +99,58 @@ const ChatRoom = ({ user }) => {
   }, [messages]);
 
   useEffect(() => {
-    // You might attach the remote stream to a video/audio element here.
+    // Handle remote stream changes and attach to video elements
     if (remoteStream && remoteVideoRef.current) {
+      console.log("Setting remote stream to video element:", remoteStream);
       remoteVideoRef.current.srcObject = remoteStream;
       
-      // Fix for blank video display - check if there are video tracks
+      // Fix for video display - check for actual video tracks
+      const hasVideoTracks = remoteStream.getVideoTracks().length > 0;
+      console.log(`Remote stream has video tracks: ${hasVideoTracks}`);
+      
+      // Get audio tracks too
+      const hasAudioTracks = remoteStream.getAudioTracks().length > 0;
+      console.log(`Remote stream has audio tracks: ${hasAudioTracks}`);
+      
+      // Show/hide video container based on tracks
       if (remoteVideoContainerRef.current) {
-        const hasVideoTracks = remoteStream.getVideoTracks().length > 0;
         remoteVideoContainerRef.current.style.display = hasVideoTracks ? 'block' : 'none';
-        
-        // If remote video is not coming, show fallback UI
-        if (!hasVideoTracks && isVideoCallActive) {
-          console.log("Remote has no video tracks");
-        }
+      }
+      
+      // Update fallback visibility
+      const fallbackElement = document.getElementById('remote-video-fallback');
+      if (fallbackElement) {
+        fallbackElement.style.display = (isVideoCallActive && !hasVideoTracks) ? 'flex' : 'none';
+      }
+      
+      // Special check for audio-only calls
+      if (!isVideoCallActive && hasAudioTracks) {
+        console.log("Audio-only call has active audio tracks");
       }
     }
   }, [remoteStream, isVideoCallActive]);
+
+  // Add this new effect to monitor media permission issues
+  useEffect(() => {
+    // Helper function to check permissions
+    const checkMediaPermissions = async () => {
+      try {
+        // Just check for permissions without keeping the stream
+        const tempStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
+        console.log("Media permissions granted");
+        
+        // Stop tracks right away since we're just checking
+        tempStream.getTracks().forEach(track => track.stop());
+      } catch (err) {
+        console.error("Media permission issue:", err.name);
+        if (err.name === 'NotAllowedError') {
+          alert("Please allow camera and microphone permissions for calls to work properly.");
+        }
+      }
+    };
+
+    checkMediaPermissions();
+  }, []);
 
   const handleSendMessage = async (e) => {
     e.preventDefault();
@@ -260,7 +296,10 @@ const ChatRoom = ({ user }) => {
           roomId, 
           user.uid, 
           setRemoteStream, 
-          (status) => setCallStatus(status)
+          (status) => {
+            setCallStatus(status);
+            console.log("Call status changed:", status);
+          }
         );
         setIsVideoCallActive(true);
       } else {
@@ -269,15 +308,20 @@ const ChatRoom = ({ user }) => {
           roomId, 
           user.uid, 
           setRemoteStream, 
-          (status) => setCallStatus(status)
+          (status) => {
+            setCallStatus(status);
+            console.log("Call status changed:", status);
+          }
         );
       }
       
       // Get local media and mark as answered
+      console.log("Starting media for accepted call");
       const { localStream } = await callServiceRef.current.start();
       
       if (localVideoRef.current) {
         localVideoRef.current.srcObject = localStream;
+        console.log("Local stream set to video element");
       }
       
       setIsVoiceCallActive(true);
@@ -285,6 +329,7 @@ const ChatRoom = ({ user }) => {
       
       // Update call metadata as active
       await updateCallMetadata(roomId, 'active');
+      console.log("Call accepted and active");
     } catch (error) {
       console.error("Error accepting call:", error);
       alert("Could not accept call. Please check your device permissions.");
