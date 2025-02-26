@@ -2,11 +2,12 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { listenForMessages, listenForRoomInfo, sendMessage } from '../services/chat';
-import { uploadMedia, initializeVoiceCall, initializeVideoCall } from '../services/media';
+import { uploadMedia, initializeVoiceCall, initializeVideoCall, listenForCallMetadata, updateCallMetadata } from '../services/media';
 import { X, Send, Paperclip, Video, Phone, Mic, MicOff, VideoOff, PhoneOff } from 'lucide-react';
 import Message from './Message';
 import MediaPreview from './MediaPreview';
 import CallInterface from './CallInterface';
+import CallNotification from './CallNotification';
 
 const ChatRoom = ({ user }) => {
   const { roomId } = useParams();
@@ -23,11 +24,14 @@ const ChatRoom = ({ user }) => {
   const [callStatus, setCallStatus] = useState('idle'); // e.g. idle, offer_sent, answered, ended
   const [isAudioMuted, setIsAudioMuted] = useState(false);
   const [isVideoEnabled, setIsVideoEnabled] = useState(true);
+  const [incomingCall, setIncomingCall] = useState(null);
   const messagesEndRef = useRef(null);
   const fileInputRef = useRef(null);
   const callServiceRef = useRef(null);
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
+  const remoteVideoContainerRef = useRef(null);
+  const callSoundRef = useRef(null);
 
   useEffect(() => {
     if (!user) {
@@ -55,10 +59,33 @@ const ChatRoom = ({ user }) => {
         navigate('/');
       }
     });
+
+    // Listen for incoming calls
+    const callMetadataUnsubscribe = listenForCallMetadata(
+      roomId, 
+      user.uid, 
+      (callData) => {
+        if (callData.status === 'calling' && !isVoiceCallActive && !isVideoCallActive) {
+          // Show incoming call notification
+          setIncomingCall(callData);
+          // Play call sound
+          playCallSound();
+        } else if (callData.isActive === false) {
+          // Call was ended
+          setIncomingCall(null);
+          stopCallSound();
+        }
+      }
+    );
+    
+    // Get username for caller display
+    const callerDisplayName = localStorage.getItem('username') || 'User';
     
     return () => {
       messagesUnsubscribe();
       roomUnsubscribe();
+      callMetadataUnsubscribe();
+      stopCallSound();
       // End the active call on component unmount.
       if (callServiceRef.current) {
         callServiceRef.current.end();
@@ -75,8 +102,19 @@ const ChatRoom = ({ user }) => {
     // You might attach the remote stream to a video/audio element here.
     if (remoteStream && remoteVideoRef.current) {
       remoteVideoRef.current.srcObject = remoteStream;
+      
+      // Fix for blank video display - check if there are video tracks
+      if (remoteVideoContainerRef.current) {
+        const hasVideoTracks = remoteStream.getVideoTracks().length > 0;
+        remoteVideoContainerRef.current.style.display = hasVideoTracks ? 'block' : 'none';
+        
+        // If remote video is not coming, show fallback UI
+        if (!hasVideoTracks && isVideoCallActive) {
+          console.log("Remote has no video tracks");
+        }
+      }
     }
-  }, [remoteStream]);
+  }, [remoteStream, isVideoCallActive]);
 
   const handleSendMessage = async (e) => {
     e.preventDefault();
@@ -197,6 +235,70 @@ const ChatRoom = ({ user }) => {
     }
   };
 
+  const playCallSound = () => {
+    if (!callSoundRef.current) {
+      callSoundRef.current = new Audio('/call-ring.mp3'); // Add this sound to your public folder
+      callSoundRef.current.loop = true;
+    }
+    callSoundRef.current.play().catch(e => console.log("Audio play error:", e));
+  };
+  
+  const stopCallSound = () => {
+    if (callSoundRef.current) {
+      callSoundRef.current.pause();
+      callSoundRef.current.currentTime = 0;
+    }
+  };
+
+  const handleAcceptCall = async () => {
+    stopCallSound();
+    
+    try {
+      if (incomingCall.isVideo) {
+        // Accept video call
+        callServiceRef.current = initializeVideoCall(
+          roomId, 
+          user.uid, 
+          setRemoteStream, 
+          (status) => setCallStatus(status)
+        );
+        setIsVideoCallActive(true);
+      } else {
+        // Accept voice call
+        callServiceRef.current = initializeVoiceCall(
+          roomId, 
+          user.uid, 
+          setRemoteStream, 
+          (status) => setCallStatus(status)
+        );
+      }
+      
+      // Get local media and mark as answered
+      const { localStream } = await callServiceRef.current.start();
+      
+      if (localVideoRef.current) {
+        localVideoRef.current.srcObject = localStream;
+      }
+      
+      setIsVoiceCallActive(true);
+      setIncomingCall(null);
+      
+      // Update call metadata as active
+      await updateCallMetadata(roomId, 'active');
+    } catch (error) {
+      console.error("Error accepting call:", error);
+      alert("Could not accept call. Please check your device permissions.");
+    }
+  };
+
+  const handleDeclineCall = async () => {
+    stopCallSound();
+    setIncomingCall(null);
+    
+    // Update call metadata as inactive
+    await updateCallMetadata(roomId, 'inactive');
+  };
+
   return (
     <div className="flex flex-col h-screen bg-gray-100">
       {/* Header */}
@@ -225,6 +327,16 @@ const ChatRoom = ({ user }) => {
           </div>
         </div>
       </div>
+      
+      {/* Call Notification */}
+      {incomingCall && (
+        <CallNotification
+          isVideo={incomingCall.isVideo}
+          caller={roomInfo?.creatorName || 'Someone'}
+          onAccept={handleAcceptCall}
+          onDecline={handleDeclineCall}
+        />
+      )}
       
       {/* WhatsApp-style Call UI */}
       {(isVoiceCallActive || isVideoCallActive) && (
@@ -255,13 +367,26 @@ const ChatRoom = ({ user }) => {
           {/* Call content */}
           <div className="flex-1 relative flex items-center justify-center">
             {/* Remote video (fills the screen) */}
-            {isVideoCallActive && (
+            <div ref={remoteVideoContainerRef} className="absolute inset-0">
               <video 
                 ref={remoteVideoRef}
                 autoPlay
                 playsInline
-                className="absolute inset-0 w-full h-full object-cover"
+                className="w-full h-full object-cover"
               />
+            </div>
+            
+            {/* Fallback when remote video not visible */}
+            {isVideoCallActive && (
+              <div id="remote-video-fallback" className="absolute inset-0 w-full h-full bg-gradient-to-b from-gray-800 to-gray-900 flex items-center justify-center">
+                <div className="text-center text-white">
+                  <div className="h-24 w-24 mx-auto rounded-full bg-indigo-500 flex items-center justify-center mb-4">
+                    <span className="text-3xl font-bold">{roomInfo?.creatorName?.slice(0, 1) || '?'}</span>
+                  </div>
+                  <p>Waiting for video...</p>
+                  <p className="text-sm opacity-75">The other person may have video disabled</p>
+                </div>
+              </div>
             )}
             
             {/* Audio call background */}

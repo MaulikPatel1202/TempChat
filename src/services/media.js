@@ -29,6 +29,45 @@ export const uploadMedia = async (roomId, file) => {
   }
 };
 
+// Add these functions for call metadata
+export const sendCallMetadata = async (roomId, userId, callData) => {
+  try {
+    await setDoc(doc(db, 'rooms', roomId, 'callMetadata', 'current'), {
+      from: userId,
+      timestamp: new Date(),
+      isActive: true,
+      ...callData
+    });
+  } catch (error) {
+    console.error("Error sending call metadata:", error);
+  }
+};
+
+export const listenForCallMetadata = (roomId, userId, onIncomingCall) => {
+  const callRef = doc(db, 'rooms', roomId, 'callMetadata', 'current');
+  
+  return onSnapshot(callRef, (snapshot) => {
+    if (snapshot.exists()) {
+      const data = snapshot.data();
+      if (data.from !== userId && data.isActive) {
+        // Someone else is calling
+        onIncomingCall(data);
+      }
+    }
+  });
+};
+
+export const updateCallMetadata = async (roomId, status) => {
+  try {
+    await setDoc(doc(db, 'rooms', roomId, 'callMetadata', 'current'), 
+      { isActive: status === 'active' }, 
+      { merge: true }
+    );
+  } catch (error) {
+    console.error("Error updating call metadata:", error);
+  }
+};
+
 export const initializeVoiceCall = (roomId, userId, onRemoteStream, onCallStatusChange) => {
   console.log("Initializing voice call with WebRTC...");
   // false = audio only
@@ -44,6 +83,11 @@ export const initializeVoiceCall = (roomId, userId, onRemoteStream, onCallStatus
       await sendCallSignal(roomId, userId, {
         type: 'offer',
         offer: result.offer
+      });
+      // Update call metadata for notifications
+      await sendCallMetadata(roomId, userId, {
+        isVideo: false,
+        status: 'calling'
       });
       return result;
     },
@@ -61,6 +105,8 @@ export const initializeVoiceCall = (roomId, userId, onRemoteStream, onCallStatus
       service.endCall();
       // Send end call signal
       sendCallSignal(roomId, userId, { type: 'end' });
+      // Update call metadata
+      updateCallMetadata(roomId, 'inactive');
     },
     enableVideo: async () => {
       const result = await service.enableVideo();
@@ -90,6 +136,11 @@ export const initializeVideoCall = (roomId, userId, onRemoteStream, onCallStatus
         type: 'offer',
         offer: result.offer
       });
+      // Update call metadata for notifications
+      await sendCallMetadata(roomId, userId, {
+        isVideo: true,
+        status: 'calling'
+      });
       return result;
     },
     answer: async (remoteOffer) => {
@@ -106,6 +157,8 @@ export const initializeVideoCall = (roomId, userId, onRemoteStream, onCallStatus
       service.endCall();
       // Send end call signal
       sendCallSignal(roomId, userId, { type: 'end' });
+      // Update call metadata
+      updateCallMetadata(roomId, 'inactive');
     }
   };
 };
