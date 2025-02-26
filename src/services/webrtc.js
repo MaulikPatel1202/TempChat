@@ -15,23 +15,57 @@ export default class WebRTCService {
 
   async startCall() {
     try {
+      // First check if we have permissions by doing a permission check
+      console.log("Requesting media permissions for call...");
+      
+      // Be more specific about audio constraints
       const constraints = {
-        audio: true,
-        video: this.isVideo ? { width: 640, height: 480 } : false
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        },
+        video: this.isVideo ? { 
+          width: { ideal: 640 }, 
+          height: { ideal: 480 },
+          facingMode: "user"
+        } : false
       };
-      this.localStream = await navigator.mediaDevices.getUserMedia(constraints);
+      
+      console.log("Using constraints:", JSON.stringify(constraints));
+      
+      try {
+        this.localStream = await navigator.mediaDevices.getUserMedia(constraints);
+        console.log("Permissions granted, got local stream with tracks:", 
+          this.localStream.getTracks().map(t => `${t.kind}:${t.label}:${t.enabled}`).join(', '));
+      } catch (permissionError) {
+        console.error("Permission error:", permissionError.name, permissionError.message);
+        
+        if (permissionError.name === 'NotAllowedError') {
+          throw new Error("Microphone/camera access denied. Please allow access in your browser settings and try again.");
+        } else if (permissionError.name === 'NotFoundError') {
+          throw new Error("No microphone or camera found on your device.");
+        } else {
+          throw permissionError;
+        }
+      }
+      
+      // Now that we have permissions, create the peer connection
       this.peerConnection = this.createPeerConnection();
 
-      // Add local tracks to the connection.
+      // Add local tracks to the connection
+      console.log("Adding tracks to peer connection");
       this.localStream.getTracks().forEach(track => {
         this.peerConnection.addTrack(track, this.localStream);
+        console.log(`Added ${track.kind} track to peer connection`);
       });
 
-      // Create an offer and set local description.
+      // Create an offer and set local description
+      console.log("Creating offer");
       const offer = await this.peerConnection.createOffer();
+      console.log("Setting local description");
       await this.peerConnection.setLocalDescription(offer);
       
-      // In a real app, send the offer (offer.sdp and type) via signaling (e.g. WebSocket or Firestore) to the remote peer.
       if (this.onCallStatusChange) {
         this.onCallStatusChange('offer_sent');
       }
@@ -45,13 +79,38 @@ export default class WebRTCService {
 
   async answerCall(remoteOffer) {
     try {
+      // Be more specific about audio constraints
       const constraints = {
-        audio: true,
-        video: this.isVideo ? { width: 640, height: 480 } : false
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        },
+        video: this.isVideo ? { 
+          width: { ideal: 640 }, 
+          height: { ideal: 480 },
+          facingMode: "user"
+        } : false
       };
 
-      // Get user media first before creating peer connection
-      this.localStream = await navigator.mediaDevices.getUserMedia(constraints);
+      console.log("Answering call, requesting user media with constraints:", JSON.stringify(constraints));
+
+      try {
+        // Get user media first before creating peer connection
+        this.localStream = await navigator.mediaDevices.getUserMedia(constraints);
+        console.log("Got local stream for answer with tracks:", 
+          this.localStream.getTracks().map(t => `${t.kind}:${t.label}:${t.enabled}`).join(', '));
+      } catch (permissionError) {
+        console.error("Permission error while answering:", permissionError.name, permissionError.message);
+        
+        if (permissionError.name === 'NotAllowedError') {
+          throw new Error("Microphone/camera access denied. Please allow access in your browser settings and try again.");
+        } else if (permissionError.name === 'NotFoundError') {
+          throw new Error("No microphone or camera found on your device.");
+        } else {
+          throw permissionError;
+        }
+      }
       
       // Create peer connection after we have the local stream
       if (!this.peerConnection) {
@@ -60,6 +119,7 @@ export default class WebRTCService {
         // Add local tracks to the connection
         this.localStream.getTracks().forEach(track => {
           this.peerConnection.addTrack(track, this.localStream);
+          console.log(`Added ${track.kind} track to peer connection for answer`);
         });
       }
 
@@ -72,6 +132,7 @@ export default class WebRTCService {
       // Then create answer
       console.log("Creating answer");
       const answer = await this.peerConnection.createAnswer();
+      console.log("Setting local description for answer");
       await this.peerConnection.setLocalDescription(answer);
       
       if (this.onCallStatusChange) {

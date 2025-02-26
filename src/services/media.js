@@ -77,33 +77,31 @@ export const initializeVoiceCall = (roomId, userId, onRemoteStream, onCallStatus
   const signalUnsub = setupSignaling(roomId, userId, service);
   
   return {
-    localStream: null,
     start: async () => {
-      const result = await service.startCall();
-      // Store local stream reference for UI
-      this.localStream = result.localStream;
-      // Send offer to signaling channel
-      await sendCallSignal(roomId, userId, {
-        type: 'offer',
-        offer: result.offer
-      });
-      // Update call metadata for notifications
-      await sendCallMetadata(roomId, userId, {
-        isVideo: false,
-        status: 'calling'
-      });
-      return result;
+      try {
+        const result = await service.startCall();
+        return result;
+      } catch (error) {
+        console.error("Failed to start voice call:", error);
+        // Make sure we clean up properly on failure
+        if (service.localStream) {
+          service.localStream.getTracks().forEach(track => track.stop());
+        }
+        throw error;
+      }
     },
     answer: async (remoteOffer) => {
-      const result = await service.answerCall(remoteOffer);
-      // Store local stream reference for UI
-      this.localStream = result.localStream;
-      // Send answer to signaling channel
-      await sendCallSignal(roomId, userId, {
-        type: 'answer',
-        answer: result.answer
-      });
-      return result;
+      try {
+        const result = await service.answerCall(remoteOffer);
+        return result;
+      } catch (error) {
+        console.error("Failed to answer call:", error);
+        // Make sure we clean up properly on failure
+        if (service.localStream) {
+          service.localStream.getTracks().forEach(track => track.stop());
+        }
+        throw error;
+      }
     },
     addCandidate: async (candidate) => await service.addRemoteCandidate(candidate),
     end: () => {
@@ -139,33 +137,31 @@ export const initializeVideoCall = (roomId, userId, onRemoteStream, onCallStatus
   const signalUnsub = setupSignaling(roomId, userId, service);
   
   return {
-    localStream: null,
     start: async () => {
-      const result = await service.startCall();
-      // Store local stream reference
-      this.localStream = result.localStream;
-      // Send offer to signaling channel
-      await sendCallSignal(roomId, userId, {
-        type: 'offer',
-        offer: result.offer
-      });
-      // Update call metadata for notifications
-      await sendCallMetadata(roomId, userId, {
-        isVideo: true,
-        status: 'calling'
-      });
-      return result;
+      try {
+        const result = await service.startCall();
+        return result;
+      } catch (error) {
+        console.error("Failed to start video call:", error);
+        // Make sure we clean up properly on failure
+        if (service.localStream) {
+          service.localStream.getTracks().forEach(track => track.stop());
+        }
+        throw error;
+      }
     },
     answer: async (remoteOffer) => {
-      const result = await service.answerCall(remoteOffer);
-      // Store local stream reference
-      this.localStream = result.localStream;
-      // Send answer to signaling channel
-      await sendCallSignal(roomId, userId, {
-        type: 'answer',
-        answer: result.answer
-      });
-      return result;
+      try {
+        const result = await service.answerCall(remoteOffer);
+        return result;
+      } catch (error) {
+        console.error("Failed to answer video call:", error);
+        // Make sure we clean up properly on failure
+        if (service.localStream) {
+          service.localStream.getTracks().forEach(track => track.stop());
+        }
+        throw error;
+      }
     },
     addCandidate: async (candidate) => await service.addRemoteCandidate(candidate),
     end: () => {
@@ -204,17 +200,19 @@ async function sendCallSignal(roomId, userId, signalData) {
   }
 }
 
-// Update the signaling query to avoid index issues
+// Improve signaling function
 function setupSignaling(roomId, userId, webrtcService) {
-  // Create a timestamp 5 minutes in the past to limit query results
-  const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
+  // Create a timestamp 10 minutes in the past to limit query results but ensure we get recent signals
+  const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
   
-  // Simpler query that doesn't require a composite index
+  // Use a simpler query that just looks at recent signals
   const q = query(
     collection(db, 'rooms', roomId, 'signals'),
-    where('timestamp', '>', fiveMinutesAgo),
+    where('timestamp', '>', tenMinutesAgo),
     orderBy('timestamp', 'asc')
   );
+  
+  console.log(`Setting up signaling for room ${roomId}, user ${userId}`);
   
   return onSnapshot(q, (snapshot) => {
     snapshot.docChanges().forEach(async (change) => {
@@ -309,5 +307,7 @@ function setupSignaling(roomId, userId, webrtcService) {
         }
       }
     });
+  }, (error) => {
+    console.error("Signaling error:", error);
   });
 }
