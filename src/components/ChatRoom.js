@@ -128,7 +128,34 @@ const ChatRoom = ({ user }) => {
         console.log("Audio-only call has active audio tracks");
       }
     }
-  }, [remoteStream, isVideoCallActive]);
+    
+    // Add debug info in development mode
+    if (process.env.NODE_ENV !== 'production') {
+      // Create or update debug info display
+      let debugEl = document.getElementById('webrtc-debug-info');
+      if (!debugEl) {
+        debugEl = document.createElement('div');
+        debugEl.id = 'webrtc-debug-info';
+        debugEl.style.position = 'fixed';
+        debugEl.style.bottom = '10px';
+        debugEl.style.left = '10px';
+        debugEl.style.backgroundColor = 'rgba(0,0,0,0.7)';
+        debugEl.style.color = 'white';
+        debugEl.style.padding = '8px';
+        debugEl.style.borderRadius = '4px';
+        debugEl.style.fontSize = '12px';
+        debugEl.style.zIndex = '9999';
+        document.body.appendChild(debugEl);
+      }
+      
+      debugEl.innerHTML = `
+        <div>Call Status: ${callStatus}</div>
+        <div>Audio: ${remoteStream?.getAudioTracks().length > 0 ? 'Yes' : 'No'}</div>
+        <div>Video: ${remoteStream?.getVideoTracks().length > 0 ? 'Yes' : 'No'}</div>
+        <div>Local Muted: ${isAudioMuted ? 'Yes' : 'No'}</div>
+      `;
+    }
+  }, [remoteStream, callStatus, isAudioMuted, isVideoCallActive]);
 
   // Add this new effect to monitor media permission issues
   useEffect(() => {
@@ -273,10 +300,25 @@ const ChatRoom = ({ user }) => {
 
   const playCallSound = () => {
     if (!callSoundRef.current) {
-      callSoundRef.current = new Audio('/call-ring.mp3'); // Add this sound to your public folder
+      // Use a default tone from an available public URL instead
+      callSoundRef.current = new Audio('https://assets.mixkit.co/active_storage/sfx/2304/2304-preview.mp3');
       callSoundRef.current.loop = true;
     }
-    callSoundRef.current.play().catch(e => console.log("Audio play error:", e));
+    callSoundRef.current.play().catch(e => {
+      console.log("Audio play error:", e);
+      // Fallback - create a simple beep using AudioContext if available
+      try {
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const oscillator = audioCtx.createOscillator();
+        oscillator.type = 'sine';
+        oscillator.frequency.setValueAtTime(800, audioCtx.currentTime);
+        oscillator.connect(audioCtx.destination);
+        oscillator.start();
+        setTimeout(() => oscillator.stop(), 500);
+      } catch (err) {
+        console.log("Fallback audio also failed:", err);
+      }
+    });
   };
   
   const stopCallSound = () => {

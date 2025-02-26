@@ -184,44 +184,53 @@ async function sendCallSignal(roomId, userId, signalData) {
   }
 }
 
+// Update the signaling query to avoid index issues
+
 function setupSignaling(roomId, userId, webrtcService) {
-  // Listen for signals in the room
+  // Simpler query that doesn't require a composite index
   const q = query(
     collection(db, 'rooms', roomId, 'signals'),
     where('from', '!=', userId),
-    orderBy('timestamp', 'desc'), // Get most recent signals first
-    limit(10) // Limit to prevent processing too many old messages
+    orderBy('timestamp') // Only order by timestamp, not multiple fields
   );
   
   return onSnapshot(q, (snapshot) => {
     snapshot.docChanges().forEach(async (change) => {
       if (change.type === 'added') {
         const signal = change.doc.data();
-        console.log('Received signal:', signal.type);
+        console.log('Received signal:', signal.type, 'from:', signal.from);
         
         // Process different signal types
         if (signal.type === 'offer') {
-          console.log('Processing offer signal');
           try {
-            const result = await webrtcService.answerCall(signal.offer);
+            console.log('Processing offer signal');
+            await webrtcService.answerCall(signal.offer);
+            console.log('Created answer to offer');
+            
+            // Get the answer from the peer connection
+            const answer = webrtcService.peerConnection.localDescription;
             
             // Send answer back
             await sendCallSignal(roomId, userId, {
               type: 'answer',
-              answer: result.answer
+              answer
             });
+            console.log('Sent answer to offer');
             
-            // Send any ICE candidates we've collected
-            if (webrtcService.candidates.length > 0) {
-              console.log(`Sending ${webrtcService.candidates.length} ICE candidates`);
-              for (const candidate of webrtcService.candidates) {
-                await sendCallSignal(roomId, userId, {
-                  type: 'candidate',
-                  candidate
-                });
+            // Add slight delay before sending ICE candidates to ensure answer is processed
+            setTimeout(async () => {
+              // Send any ICE candidates we've collected
+              if (webrtcService.candidates.length > 0) {
+                console.log(`Sending ${webrtcService.candidates.length} ICE candidates after answering`);
+                for (const candidate of webrtcService.candidates) {
+                  await sendCallSignal(roomId, userId, {
+                    type: 'candidate',
+                    candidate
+                  });
+                }
+                webrtcService.candidates = [];
               }
-              webrtcService.candidates = [];
-            }
+            }, 1000);
           } catch (err) {
             console.error("Error processing offer:", err);
           }

@@ -140,9 +140,30 @@ export default class WebRTCService {
 
     pc.onconnectionstatechange = e => {
       console.log("Connection state change:", pc.connectionState);
-      if (pc.connectionState === 'connected' && this.onCallStatusChange) {
-        this.onCallStatusChange('connected');
+      
+      // Add more detailed logs based on connection state
+      switch(pc.connectionState) {
+        case 'connected':
+          console.log("WebRTC connection established successfully");
+          if (this.onCallStatusChange) {
+            this.onCallStatusChange('connected');
+          }
+          break;
+        case 'disconnected':
+          console.log("WebRTC connection disconnected");
+          break;
+        case 'failed':
+          console.log("WebRTC connection failed - trying to restart ICE");
+          if (this.peerConnection) {
+            this.peerConnection.restartIce();
+          }
+          break;
       }
+    };
+    
+    // Add this additional event handler
+    pc.onicegatheringstatechange = e => {
+      console.log("ICE gathering state:", pc.iceGatheringState);
     };
     
     return pc;
