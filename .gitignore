@@ -21,3 +21,7 @@
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+# Firebase config with sensitive info
+# Uncomment the next line if you want to hide your Firebase config
+# src/firebase.js

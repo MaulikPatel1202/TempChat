@@ -1,6 +1,7 @@
 // src/services/media.js
 import { storage } from '../firebase';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+import WebRTCService from './webrtc';
 
 // Upload media file and get download URL
 export const uploadMedia = async (roomId, file) => {
@@ -26,21 +27,27 @@ export const uploadMedia = async (roomId, file) => {
   }
 };
 
-// In a real app, you would have WebRTC initialization here
-export const initializeVoiceCall = () => {
+// Replace placeholder functions with actual WebRTC service integration.
+export const initializeVoiceCall = (roomId, userId, onRemoteStream, onCallStatusChange) => {
   console.log("Initializing voice call with WebRTC...");
-  // WebRTC setup would go here
+  // false = audio only
+  const service = new WebRTCService(roomId, userId, false, onRemoteStream, onCallStatusChange);
   return {
-    start: () => console.log("Starting voice call"),
-    end: () => console.log("Ending voice call")
+    start: async () => await service.startCall(),
+    answer: async (remoteOffer) => await service.answerCall(remoteOffer),
+    addCandidate: async (candidate) => await service.addRemoteCandidate(candidate),
+    end: () => service.endCall()
   };
 };
 
-export const initializeVideoCall = () => {
+export const initializeVideoCall = (roomId, userId, onRemoteStream, onCallStatusChange) => {
   console.log("Initializing video call with WebRTC...");
-  // WebRTC setup would go here
+  // true = video enabled
+  const service = new WebRTCService(roomId, userId, true, onRemoteStream, onCallStatusChange);
   return {
-    start: () => console.log("Starting video call"),
-    end: () => console.log("Ending video call")
+    start: async () => await service.startCall(),
+    answer: async (remoteOffer) => await service.answerCall(remoteOffer),
+    addCandidate: async (candidate) => await service.addRemoteCandidate(candidate),
+    end: () => service.endCall()
   };
 };

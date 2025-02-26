@@ -19,20 +19,24 @@ const ChatRoom = ({ user }) => {
   const [isVideoCallActive, setIsVideoCallActive] = useState(false);
   const [mediaUpload, setMediaUpload] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [remoteStream, setRemoteStream] = useState(null);
+  const [callStatus, setCallStatus] = useState('idle'); // e.g. idle, offer_sent, answered, ended
   const messagesEndRef = useRef(null);
   const fileInputRef = useRef(null);
-  const voiceCallRef = useRef(null);
-  const videoCallRef = useRef(null);
+  const callServiceRef = useRef(null);
 
   useEffect(() => {
     if (!user) {
       navigate('/');
       return;
     }
-    
-    // Initialize call handlers (in a real app, this would set up WebRTC)
-    voiceCallRef.current = initializeVoiceCall();
-    videoCallRef.current = initializeVideoCall();
+    // Initialize call service as audio-only initially.
+    callServiceRef.current = initializeVoiceCall(
+      roomId, 
+      user.uid, 
+      setRemoteStream, 
+      (status) => setCallStatus(status)
+    );
     
     // Listen for messages and room info
     const messagesUnsubscribe = listenForMessages(roomId, (newMessages) => {
@@ -51,22 +55,25 @@ const ChatRoom = ({ user }) => {
     return () => {
       messagesUnsubscribe();
       roomUnsubscribe();
-      
-      // Clean up calls on component unmount
-      if (isVoiceCallActive && voiceCallRef.current) {
-        voiceCallRef.current.end();
-      }
-      
-      if (isVideoCallActive && videoCallRef.current) {
-        videoCallRef.current.end();
+      // End the active call on component unmount.
+      if (callServiceRef.current) {
+        callServiceRef.current.end();
       }
     };
-  }, [roomId, user, navigate, isVoiceCallActive, isVideoCallActive]);
+  }, [roomId, user, navigate]);
 
   useEffect(() => {
     // Scroll to bottom when messages change
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  useEffect(() => {
+    // You might attach the remote stream to a video/audio element here.
+    if (remoteStream) {
+      // For example: remoteVideoRef.current.srcObject = remoteStream;
+      console.log("Remote stream set", remoteStream);
+    }
+  }, [remoteStream]);
 
   const handleSendMessage = async (e) => {
     e.preventDefault();
@@ -108,32 +115,44 @@ const ChatRoom = ({ user }) => {
     fileInputRef.current.click();
   };
 
-  const handleToggleVoiceCall = () => {
+  const handleToggleVoiceCall = async () => {
+    if (!callServiceRef.current) return;
     if (isVoiceCallActive) {
-      voiceCallRef.current.end();
+      await callServiceRef.current.end();
+      setIsVoiceCallActive(false);
+      setIsVideoCallActive(false);
     } else {
-      if (isVideoCallActive) {
-        videoCallRef.current.end();
-        setIsVideoCallActive(false);
-      }
-      voiceCallRef.current.start();
+      const { offer } = await callServiceRef.current.start();
+      console.log("Voice call offer created:", offer);
+      setIsVoiceCallActive(true);
     }
-    
-    setIsVoiceCallActive(!isVoiceCallActive);
   };
 
-  const handleToggleVideoCall = () => {
+  const handleToggleVideoCall = async () => {
+    if (!callServiceRef.current) return;
     if (isVideoCallActive) {
-      videoCallRef.current.end();
+      await callServiceRef.current.end();
+      setIsVoiceCallActive(false);
+      setIsVideoCallActive(false);
     } else {
       if (isVoiceCallActive) {
-        voiceCallRef.current.end();
-        setIsVoiceCallActive(false);
+        // Upgrade the existing audio call to video.
+        await callServiceRef.current.enableVideo();
+        setIsVideoCallActive(true);
+      } else {
+        // No active call -> start a video call instance.
+        callServiceRef.current = initializeVideoCall(
+          roomId, 
+          user.uid, 
+          setRemoteStream, 
+          (status) => setCallStatus(status)
+        );
+        const { offer } = await callServiceRef.current.start();
+        console.log("Video call offer created:", offer);
+        setIsVoiceCallActive(true);
+        setIsVideoCallActive(true);
       }
-      videoCallRef.current.start();
     }
-    
-    setIsVideoCallActive(!isVideoCallActive);
   };
 
   return (
