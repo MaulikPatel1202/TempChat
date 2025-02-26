@@ -105,6 +105,25 @@ export const initializeVoiceCall = (roomId, userId, onRemoteStream, onCallStatus
     answer: async (remoteOffer) => {
       try {
         const result = await service.answerCall(remoteOffer);
+        
+        // Send answer back immediately
+        await sendCallSignal(roomId, userId, {
+          type: 'answer',
+          answer: result.answer
+        });
+        
+        // Now immediately send all the collected ICE candidates
+        if (result.candidates && result.candidates.length > 0) {
+          console.log(`Sending ${result.candidates.length} ICE candidates immediately after answer`);
+          for (const candidate of result.candidates) {
+            await sendCallSignal(roomId, userId, {
+              type: 'candidate',
+              candidate
+            });
+          }
+          service.candidates = []; // Clear the sent candidates
+        }
+        
         return result;
       } catch (error) {
         console.error("Failed to answer call:", error);

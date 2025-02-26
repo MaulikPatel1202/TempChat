@@ -138,11 +138,40 @@ export default class WebRTCService {
       console.log("Setting local description for answer");
       await this.peerConnection.setLocalDescription(answer);
       
+      // Explicitly collect ICE candidates for a short time to ensure we have some
+      this.answerCandidatesReady = false;
+      
+      // Create a promise that resolves after gathering some candidates
+      const gatherCandidatesPromise = new Promise(resolve => {
+        // Set a timeout to ensure we don't wait forever
+        setTimeout(() => {
+          this.answerCandidatesReady = true;
+          resolve();
+        }, 1000); // Wait 1 second for initial candidates
+        
+        // Also resolve if gathering is complete
+        this.peerConnection.onicegatheringstatechange = () => {
+          if (this.peerConnection.iceGatheringState === 'complete') {
+            console.log("ICE gathering completed naturally");
+            this.answerCandidatesReady = true;
+            resolve();
+          }
+        };
+      });
+      
+      // Wait for candidates
+      await gatherCandidatesPromise;
+      
       if (this.onCallStatusChange) {
         this.onCallStatusChange('answered');
       }
       
-      return { localStream: this.localStream, answer };
+      return { 
+        localStream: this.localStream, 
+        answer,
+        // Also return collected candidates for immediate sending
+        candidates: [...this.candidates]
+      };
     } catch (error) {
       console.error("Error answering call:", error);
       throw error;
