@@ -373,6 +373,10 @@ export default class WebRTCService {
             this.peerConnection.restartIce();
           }
           break;
+        default:
+          // Handle other connection states (new, connecting, closed)
+          console.log(`WebRTC connection state: ${pc.connectionState}`);
+          break;
       }
     };
     
