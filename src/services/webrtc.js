@@ -87,8 +87,10 @@ export default class WebRTCService {
 
     pc.onicecandidate = event => {
       if (event.candidate) {
-        // In production send candidate via signaling to the remote peer.
+        // Store candidates to be sent once connection is established
         this.candidates.push(event.candidate);
+        // In production, candidates would be sent via signaling channel
+        // This is now handled in the sendCallSignal function in media.js
       }
     };
 
