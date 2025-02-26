@@ -4,6 +4,7 @@ import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import WebRTCService from './webrtc';
 import { db } from '../firebase';
 import { doc, setDoc, onSnapshot, collection, addDoc, query, where, orderBy, limit } from 'firebase/firestore';
+import signalingManager from './signaling-manager';
 
 // Upload media file and get download URL
 export const uploadMedia = async (roomId, file) => {
@@ -76,17 +77,19 @@ export const updateCallMetadata = async (roomId, status) => {
 export const initializeVoiceCall = (roomId, userId, onRemoteStream, onCallStatusChange) => {
   console.log("Initializing voice call with WebRTC...");
   // false = audio only
+  // Update to use signalingManager instead of signaling
   const service = new WebRTCService(roomId, userId, false, onRemoteStream, onCallStatusChange);
-  
-  // Setup signaling
-  const signalUnsub = setupSignaling(roomId, userId, service);
   
   return {
     start: async () => {
       try {
+        // Ensure signaling connection is established
+        await signalingManager.connect();
+        await signalingManager.joinRoom(roomId, userId);
+        
         const result = await service.startCall();
         
-        // Send the offer via call metadata so the recipient can use it to answer
+        // Send the offer via call metadata so the recipient can see there's an incoming call
         await sendCallMetadata(roomId, userId, {
           isVideo: false,
           offer: result.offer
@@ -104,25 +107,11 @@ export const initializeVoiceCall = (roomId, userId, onRemoteStream, onCallStatus
     },
     answer: async (remoteOffer) => {
       try {
+        // Ensure signaling connection is established
+        await signalingManager.connect();
+        await signalingManager.joinRoom(roomId, userId);
+        
         const result = await service.answerCall(remoteOffer);
-        
-        // Send answer back immediately
-        await sendCallSignal(roomId, userId, {
-          type: 'answer',
-          answer: result.answer
-        });
-        
-        // Now immediately send all the collected ICE candidates
-        if (result.candidates && result.candidates.length > 0) {
-          console.log(`Sending ${result.candidates.length} ICE candidates immediately after answer`);
-          for (const candidate of result.candidates) {
-            await sendCallSignal(roomId, userId, {
-              type: 'candidate',
-              candidate
-            });
-          }
-          service.candidates = []; // Clear the sent candidates
-        }
         
         return result;
       } catch (error) {
@@ -134,23 +123,13 @@ export const initializeVoiceCall = (roomId, userId, onRemoteStream, onCallStatus
         throw error;
       }
     },
-    addCandidate: async (candidate) => await service.addRemoteCandidate(candidate),
     end: () => {
       service.endCall();
-      // Clean up signaling listener
-      if (signalUnsub) signalUnsub();
-      // Send end call signal
-      sendCallSignal(roomId, userId, { type: 'end' });
       // Update call metadata
       updateCallMetadata(roomId, 'inactive');
     },
     enableVideo: async () => {
       const result = await service.enableVideo();
-      // Send updated offer after video is enabled
-      await sendCallSignal(roomId, userId, {
-        type: 'offer',
-        offer: await service.peerConnection.localDescription
-      });
       return result;
     },
     get localStream() {
@@ -164,15 +143,16 @@ export const initializeVideoCall = (roomId, userId, onRemoteStream, onCallStatus
   // true = video enabled
   const service = new WebRTCService(roomId, userId, true, onRemoteStream, onCallStatusChange);
   
-  // Setup signaling
-  const signalUnsub = setupSignaling(roomId, userId, service);
-  
   return {
     start: async () => {
       try {
+        // Ensure signaling connection is established
+        await signalingManager.connect();
+        await signalingManager.joinRoom(roomId, userId);
+        
         const result = await service.startCall();
         
-        // Send the offer via call metadata so the recipient can use it to answer
+        // Send the offer via call metadata so the recipient can see there's an incoming call
         await sendCallMetadata(roomId, userId, {
           isVideo: true,
           offer: result.offer
@@ -190,6 +170,10 @@ export const initializeVideoCall = (roomId, userId, onRemoteStream, onCallStatus
     },
     answer: async (remoteOffer) => {
       try {
+        // Ensure signaling connection is established
+        await signalingManager.connect();
+        await signalingManager.joinRoom(roomId, userId);
+        
         const result = await service.answerCall(remoteOffer);
         return result;
       } catch (error) {
@@ -201,13 +185,8 @@ export const initializeVideoCall = (roomId, userId, onRemoteStream, onCallStatus
         throw error;
       }
     },
-    addCandidate: async (candidate) => await service.addRemoteCandidate(candidate),
     end: () => {
       service.endCall();
-      // Clean up signaling listener
-      if (signalUnsub) signalUnsub();
-      // Send end call signal
-      sendCallSignal(roomId, userId, { type: 'end' });
       // Update call metadata
       updateCallMetadata(roomId, 'inactive');
     },
@@ -216,136 +195,3 @@ export const initializeVideoCall = (roomId, userId, onRemoteStream, onCallStatus
     }
   };
 };
-
-// Signaling functions
-async function sendCallSignal(roomId, userId, signalData) {
-  try {
-    // Add a unique ID to prevent duplicate processing
-    const signalId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-    
-    await addDoc(collection(db, 'rooms', roomId, 'signals'), {
-      id: signalId,
-      from: userId,
-      timestamp: new Date(),
-      ...signalData
-    });
-    
-    console.log(`Sent signal: ${signalData.type}`);
-    return true;
-  } catch (error) {
-    console.error("Error sending call signal:", error);
-    return false;
-  }
-}
-
-// Improve signaling function
-function setupSignaling(roomId, userId, webrtcService) {
-  // Create a timestamp 10 minutes in the past to limit query results but ensure we get recent signals
-  const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
-  
-  // Use a simpler query that just looks at recent signals
-  const q = query(
-    collection(db, 'rooms', roomId, 'signals'),
-    where('timestamp', '>', tenMinutesAgo),
-    orderBy('timestamp', 'asc')
-  );
-  
-  console.log(`Setting up signaling for room ${roomId}, user ${userId}`);
-  
-  return onSnapshot(q, (snapshot) => {
-    snapshot.docChanges().forEach(async (change) => {
-      if (change.type === 'added') {
-        const signal = change.doc.data();
-        
-        // Skip our own messages
-        if (signal.from === userId) {
-          return;
-        }
-        
-        console.log('Received signal:', signal.type, 'from:', signal.from);
-        
-        // Process different signal types
-        if (signal.type === 'offer') {
-          try {
-            console.log('Processing offer signal');
-            await webrtcService.answerCall(signal.offer);
-            console.log('Created answer to offer');
-            
-            // Get the answer from the peer connection
-            const answer = webrtcService.peerConnection.localDescription;
-            
-            // Send answer back
-            await sendCallSignal(roomId, userId, {
-              type: 'answer',
-              answer
-            });
-            console.log('Sent answer to offer');
-            
-            // Process any pending ICE candidates
-            await webrtcService.processPendingCandidates();
-            
-            // Add slight delay before sending ICE candidates to ensure answer is processed
-            setTimeout(async () => {
-              // Send any ICE candidates we've collected
-              if (webrtcService.candidates.length > 0) {
-                console.log(`Sending ${webrtcService.candidates.length} ICE candidates after answering`);
-                for (const candidate of webrtcService.candidates) {
-                  await sendCallSignal(roomId, userId, {
-                    type: 'candidate',
-                    candidate
-                  });
-                }
-                webrtcService.candidates = [];
-              }
-            }, 500);
-          } catch (err) {
-            console.error("Error processing offer:", err);
-          }
-        } else if (signal.type === 'answer') {
-          console.log('Processing answer signal');
-          try {
-            // Make sure peerConnection exists before setting remote description
-            if (webrtcService.peerConnection) {
-              await webrtcService.peerConnection.setRemoteDescription(
-                new RTCSessionDescription(signal.answer)
-              );
-              console.log("Remote description set successfully from answer");
-              
-              // Process any pending ICE candidates after setting remote description
-              await webrtcService.processPendingCandidates();
-              
-              // After setting remote description, send any pending ICE candidates
-              if (webrtcService.candidates.length > 0) {
-                console.log(`Sending ${webrtcService.candidates.length} ICE candidates after answer`);
-                for (const candidate of webrtcService.candidates) {
-                  await sendCallSignal(roomId, userId, {
-                    type: 'candidate',
-                    candidate
-                  });
-                }
-                webrtcService.candidates = [];
-              }
-            } else {
-              console.error("PeerConnection not established when answer received");
-            }
-          } catch (err) {
-            console.error("Error processing answer:", err);
-          }
-        } else if (signal.type === 'candidate') {
-          console.log('Processing ICE candidate');
-          try {
-            // Make sure we have a peer connection and add candidate
-            await webrtcService.addRemoteCandidate(signal.candidate);
-          } catch (err) {
-            console.error("Error adding ICE candidate:", err);
-          }
-        } else if (signal.type === 'end') {
-          console.log('Processing end call signal');
-          webrtcService.endCall();
-        }
-      }
-    });
-  }, (error) => {
-    console.error("Signaling error:", error);
-  });
-}

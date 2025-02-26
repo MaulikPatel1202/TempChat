@@ -1,4 +1,7 @@
-// New file: WebRTC service for audio/video calls
+// WebRTC service for audio/video calls
+
+// Update import to use signaling manager
+import signalingManager from './signaling-manager';
 
 export default class WebRTCService {
   constructor(roomId, userId, isVideo, onRemoteStream, onCallStatusChange) {
@@ -11,6 +14,99 @@ export default class WebRTCService {
     this.localStream = null;
     this.remoteStream = new MediaStream();
     this.candidates = [];
+    this.pendingCandidates = [];
+    this.hasRemoteDescription = false;
+
+    // Setup signaling listeners
+    this.setupSignaling();
+  }
+
+  setupSignaling() {
+    // Set up handlers for various signaling messages using signaling manager instead
+    this.unsubscribers = [
+      signalingManager.on('offer', this.handleRemoteOffer.bind(this)),
+      signalingManager.on('answer', this.handleRemoteAnswer.bind(this)),
+      signalingManager.on('candidate', this.handleRemoteCandidate.bind(this)),
+      signalingManager.on('end', this.handleCallEnd.bind(this))
+    ];
+  }
+
+  cleanupSignaling() {
+    if (this.unsubscribers) {
+      this.unsubscribers.forEach(unsub => unsub());
+      this.unsubscribers = [];
+    }
+  }
+
+  async handleRemoteOffer(message) {
+    console.log('Received remote offer:', message);
+    if (message.from === this.userId) return;
+    
+    try {
+      await this.answerCall(message.offer);
+      
+      // Send answer back
+      signalingManager.sendMessage({
+        type: 'answer',
+        roomId: this.roomId,
+        userId: this.userId,
+        answer: this.peerConnection.localDescription
+      });
+      
+      // After sending answer, send any collected ICE candidates
+      setTimeout(() => {
+        if (this.candidates.length > 0) {
+          console.log(`Sending ${this.candidates.length} ICE candidates after answering`);
+          this.candidates.forEach(candidate => {
+            signalingManager.sendMessage({
+              type: 'candidate',
+              roomId: this.roomId,
+              userId: this.userId,
+              candidate
+            });
+          });
+          this.candidates = [];
+        }
+      }, 500);
+    } catch (err) {
+      console.error('Error handling offer:', err);
+    }
+  }
+
+  async handleRemoteAnswer(message) {
+    console.log('Received remote answer:', message);
+    if (message.from === this.userId) return;
+    
+    try {
+      if (this.peerConnection) {
+        await this.peerConnection.setRemoteDescription(new RTCSessionDescription(message.answer));
+        console.log('Remote description set successfully from answer');
+        this.hasRemoteDescription = true;
+        
+        // Process any pending ICE candidates
+        await this.processPendingCandidates();
+      }
+    } catch (err) {
+      console.error('Error handling answer:', err);
+    }
+  }
+
+  async handleRemoteCandidate(message) {
+    console.log('Received remote ICE candidate');
+    if (message.from === this.userId) return;
+    
+    try {
+      await this.addRemoteCandidate(message.candidate);
+    } catch (err) {
+      console.error('Error handling ICE candidate:', err);
+    }
+  }
+
+  handleCallEnd(message) {
+    console.log('Received call end signal');
+    if (message.from === this.userId) return;
+    
+    this.endCall();
   }
 
   async startCall() {
@@ -50,6 +146,10 @@ export default class WebRTCService {
         }
       }
       
+      // Connect to signaling server and join room
+      await signalingManager.connect();
+      await signalingManager.joinRoom(this.roomId, this.userId);
+      
       // Now that we have permissions, create the peer connection
       this.peerConnection = this.createPeerConnection();
 
@@ -65,6 +165,14 @@ export default class WebRTCService {
       const offer = await this.peerConnection.createOffer();
       console.log("Setting local description");
       await this.peerConnection.setLocalDescription(offer);
+      
+      // Send offer via signaling
+      signalingManager.sendMessage({
+        type: 'offer',
+        roomId: this.roomId,
+        userId: this.userId,
+        offer: offer
+      });
       
       if (this.onCallStatusChange) {
         this.onCallStatusChange('offer_sent');
@@ -315,6 +423,17 @@ export default class WebRTCService {
       this.peerConnection.close();
       this.peerConnection = null;
     }
+    
+    // Send end call message via signaling
+    signalingManager.sendMessage({
+      type: 'end',
+      roomId: this.roomId,
+      userId: this.userId
+    });
+    
+    // Clean up signaling listeners
+    this.cleanupSignaling();
+    
     if (this.onCallStatusChange) {
       this.onCallStatusChange('ended');
     }
