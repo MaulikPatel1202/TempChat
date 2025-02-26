@@ -102,15 +102,49 @@ const ChatRoom = ({ user }) => {
     // Handle remote stream changes and attach to video elements
     if (remoteStream && remoteVideoRef.current) {
       console.log("Setting remote stream to video element:", remoteStream);
+      
+      // Check if the browser requires autoplay policy workaround
+      const playPromise = remoteVideoRef.current.play();
+      if (playPromise !== undefined) {
+        playPromise
+          .then(() => {
+            console.log("Autoplay started successfully");
+          })
+          .catch(error => {
+            console.warn("Autoplay prevented:", error);
+            // Create a user gesture-driven play button if autoplay fails
+            const playButton = document.createElement('button');
+            playButton.textContent = 'Click to unmute/play audio';
+            playButton.classList.add('absolute', 'top-4', 'left-1/2', 'transform', '-translate-x-1/2',
+              'bg-white', 'text-black', 'py-2', 'px-4', 'rounded-full', 'shadow-lg', 'z-50');
+            playButton.onclick = () => {
+              remoteVideoRef.current.play();
+              playButton.remove();
+            };
+            
+            if (remoteVideoContainerRef.current) {
+              remoteVideoContainerRef.current.appendChild(playButton);
+            }
+          });
+      }
+      
+      // Actually set the stream to the video element
       remoteVideoRef.current.srcObject = remoteStream;
       
       // Fix for video display - check for actual video tracks
       const hasVideoTracks = remoteStream.getVideoTracks().length > 0;
       console.log(`Remote stream has video tracks: ${hasVideoTracks}`);
       
-      // Get audio tracks too
-      const hasAudioTracks = remoteStream.getAudioTracks().length > 0;
+      // Get audio tracks too and make sure they're enabled
+      const audioTracks = remoteStream.getAudioTracks();
+      const hasAudioTracks = audioTracks.length > 0;
       console.log(`Remote stream has audio tracks: ${hasAudioTracks}`);
+      
+      // Ensure audio tracks are enabled (not muted)
+      audioTracks.forEach(track => {
+        track.enabled = true;
+        console.log(`Audio track enabled: ${track.enabled}, muted: ${track.muted}, readyState: ${track.readyState}`);
+      });
       
       // Show/hide video container based on tracks
       if (remoteVideoContainerRef.current) {
@@ -337,7 +371,10 @@ const ChatRoom = ({ user }) => {
         callServiceRef.current = initializeVideoCall(
           roomId, 
           user.uid, 
-          setRemoteStream, 
+          (stream) => {
+            console.log("Remote stream received in accept handler:", stream);
+            setRemoteStream(stream);
+          },
           (status) => {
             setCallStatus(status);
             console.log("Call status changed:", status);
@@ -349,7 +386,10 @@ const ChatRoom = ({ user }) => {
         callServiceRef.current = initializeVoiceCall(
           roomId, 
           user.uid, 
-          setRemoteStream, 
+          (stream) => {
+            console.log("Remote stream received in accept handler:", stream);
+            setRemoteStream(stream);
+          },
           (status) => {
             setCallStatus(status);
             console.log("Call status changed:", status);
@@ -461,6 +501,10 @@ const ChatRoom = ({ user }) => {
                 playsInline
                 className="w-full h-full object-cover"
               />
+              {/* Audio debug info */}
+              <div className="absolute top-16 left-4 bg-black bg-opacity-50 text-white text-xs p-2 rounded">
+                Audio status: {remoteStream?.getAudioTracks().length > 0 ? 'Available' : 'No audio'}
+              </div>
             </div>
             
             {/* Fallback when remote video not visible */}

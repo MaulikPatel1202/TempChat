@@ -91,11 +91,15 @@ export default class WebRTCService {
         { urls: 'stun:stun.l.google.com:19302' },
         { urls: 'stun:stun1.l.google.com:19302' },
         { urls: 'stun:stun2.l.google.com:19302' },
-        // Add TURN server for more reliable connections
+        // Add TURN server for more reliable connections - use a more reliable free TURN server
         {
-          urls: 'turn:numb.viagenie.ca',
-          credential: 'muazkh',
-          username: 'webrtc@live.com'
+          urls: [
+            'turn:openrelay.metered.ca:80',
+            'turn:openrelay.metered.ca:443',
+            'turn:openrelay.metered.ca:443?transport=tcp'
+          ],
+          username: 'openrelayproject',
+          credential: 'openrelayproject'
         }
       ],
       iceCandidatePoolSize: 10
@@ -116,10 +120,17 @@ export default class WebRTCService {
     pc.ontrack = event => {
       console.log("Remote track received:", event.streams);
       if (event.streams && event.streams[0]) {
-        event.streams[0].getTracks().forEach(track => {
-          console.log("Adding remote track to remote stream:", track.kind);
-          this.remoteStream.addTrack(track);
-        });
+        // Clear any existing tracks of the same kind from the remoteStream
+        const existingTracks = this.remoteStream.getTracks();
+        for (const track of existingTracks) {
+          if (track.kind === event.track.kind) {
+            this.remoteStream.removeTrack(track);
+          }
+        }
+        
+        // Add the new track
+        this.remoteStream.addTrack(event.track);
+        console.log(`Added ${event.track.kind} track to remote stream`);
         
         // Ensure the UI gets updated with the remote stream
         if (this.onRemoteStream) {
@@ -171,9 +182,31 @@ export default class WebRTCService {
 
   async addRemoteCandidate(candidate) {
     try {
-      await this.peerConnection.addIceCandidate(candidate);
+      if (this.peerConnection && this.peerConnection.remoteDescription) {
+        console.log("Adding ICE candidate immediately:", candidate);
+        await this.peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+      } else {
+        console.log("Storing ICE candidate for later");
+        this.pendingCandidates = this.pendingCandidates || [];
+        this.pendingCandidates.push(candidate);
+      }
     } catch (error) {
       console.log("Error adding remote candidate", error);
+    }
+  }
+
+  // Add a method to process pending candidates
+  async processPendingCandidates() {
+    if (this.pendingCandidates && this.pendingCandidates.length > 0) {
+      console.log(`Processing ${this.pendingCandidates.length} pending ICE candidates`);
+      for (const candidate of this.pendingCandidates) {
+        try {
+          await this.peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+        } catch (error) {
+          console.error("Error adding pending ICE candidate:", error);
+        }
+      }
+      this.pendingCandidates = [];
     }
   }
 

@@ -74,11 +74,14 @@ export const initializeVoiceCall = (roomId, userId, onRemoteStream, onCallStatus
   const service = new WebRTCService(roomId, userId, false, onRemoteStream, onCallStatusChange);
   
   // Setup signaling
-  setupSignaling(roomId, userId, service);
+  const signalUnsub = setupSignaling(roomId, userId, service);
   
   return {
+    localStream: null,
     start: async () => {
       const result = await service.startCall();
+      // Store local stream reference for UI
+      this.localStream = result.localStream;
       // Send offer to signaling channel
       await sendCallSignal(roomId, userId, {
         type: 'offer',
@@ -93,6 +96,8 @@ export const initializeVoiceCall = (roomId, userId, onRemoteStream, onCallStatus
     },
     answer: async (remoteOffer) => {
       const result = await service.answerCall(remoteOffer);
+      // Store local stream reference for UI
+      this.localStream = result.localStream;
       // Send answer to signaling channel
       await sendCallSignal(roomId, userId, {
         type: 'answer',
@@ -103,6 +108,8 @@ export const initializeVoiceCall = (roomId, userId, onRemoteStream, onCallStatus
     addCandidate: async (candidate) => await service.addRemoteCandidate(candidate),
     end: () => {
       service.endCall();
+      // Clean up signaling listener
+      if (signalUnsub) signalUnsub();
       // Send end call signal
       sendCallSignal(roomId, userId, { type: 'end' });
       // Update call metadata
@@ -116,6 +123,9 @@ export const initializeVoiceCall = (roomId, userId, onRemoteStream, onCallStatus
         offer: await service.peerConnection.localDescription
       });
       return result;
+    },
+    get localStream() {
+      return service.localStream;
     }
   };
 };
@@ -126,11 +136,14 @@ export const initializeVideoCall = (roomId, userId, onRemoteStream, onCallStatus
   const service = new WebRTCService(roomId, userId, true, onRemoteStream, onCallStatusChange);
   
   // Setup signaling
-  setupSignaling(roomId, userId, service);
+  const signalUnsub = setupSignaling(roomId, userId, service);
   
   return {
+    localStream: null,
     start: async () => {
       const result = await service.startCall();
+      // Store local stream reference
+      this.localStream = result.localStream;
       // Send offer to signaling channel
       await sendCallSignal(roomId, userId, {
         type: 'offer',
@@ -145,6 +158,8 @@ export const initializeVideoCall = (roomId, userId, onRemoteStream, onCallStatus
     },
     answer: async (remoteOffer) => {
       const result = await service.answerCall(remoteOffer);
+      // Store local stream reference
+      this.localStream = result.localStream;
       // Send answer to signaling channel
       await sendCallSignal(roomId, userId, {
         type: 'answer',
@@ -155,10 +170,15 @@ export const initializeVideoCall = (roomId, userId, onRemoteStream, onCallStatus
     addCandidate: async (candidate) => await service.addRemoteCandidate(candidate),
     end: () => {
       service.endCall();
+      // Clean up signaling listener
+      if (signalUnsub) signalUnsub();
       // Send end call signal
       sendCallSignal(roomId, userId, { type: 'end' });
       // Update call metadata
       updateCallMetadata(roomId, 'inactive');
+    },
+    get localStream() {
+      return service.localStream;
     }
   };
 };
@@ -185,19 +205,27 @@ async function sendCallSignal(roomId, userId, signalData) {
 }
 
 // Update the signaling query to avoid index issues
-
 function setupSignaling(roomId, userId, webrtcService) {
+  // Create a timestamp 5 minutes in the past to limit query results
+  const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
+  
   // Simpler query that doesn't require a composite index
   const q = query(
     collection(db, 'rooms', roomId, 'signals'),
-    where('from', '!=', userId),
-    orderBy('timestamp') // Only order by timestamp, not multiple fields
+    where('timestamp', '>', fiveMinutesAgo),
+    orderBy('timestamp', 'asc')
   );
   
   return onSnapshot(q, (snapshot) => {
     snapshot.docChanges().forEach(async (change) => {
       if (change.type === 'added') {
         const signal = change.doc.data();
+        
+        // Skip our own messages
+        if (signal.from === userId) {
+          return;
+        }
+        
         console.log('Received signal:', signal.type, 'from:', signal.from);
         
         // Process different signal types
@@ -217,6 +245,9 @@ function setupSignaling(roomId, userId, webrtcService) {
             });
             console.log('Sent answer to offer');
             
+            // Process any pending ICE candidates
+            await webrtcService.processPendingCandidates();
+            
             // Add slight delay before sending ICE candidates to ensure answer is processed
             setTimeout(async () => {
               // Send any ICE candidates we've collected
@@ -230,7 +261,7 @@ function setupSignaling(roomId, userId, webrtcService) {
                 }
                 webrtcService.candidates = [];
               }
-            }, 1000);
+            }, 500);
           } catch (err) {
             console.error("Error processing offer:", err);
           }
@@ -243,6 +274,9 @@ function setupSignaling(roomId, userId, webrtcService) {
                 new RTCSessionDescription(signal.answer)
               );
               console.log("Remote description set successfully from answer");
+              
+              // Process any pending ICE candidates after setting remote description
+              await webrtcService.processPendingCandidates();
               
               // After setting remote description, send any pending ICE candidates
               if (webrtcService.candidates.length > 0) {
@@ -264,17 +298,8 @@ function setupSignaling(roomId, userId, webrtcService) {
         } else if (signal.type === 'candidate') {
           console.log('Processing ICE candidate');
           try {
-            // Make sure we have a peer connection before adding candidates
-            if (webrtcService.peerConnection && 
-                webrtcService.peerConnection.remoteDescription && 
-                webrtcService.peerConnection.remoteDescription.type) {
-              await webrtcService.addRemoteCandidate(signal.candidate);
-            } else {
-              // Store the candidate for later if we're not ready yet
-              console.log("Storing ICE candidate for later");
-              webrtcService.pendingCandidates = webrtcService.pendingCandidates || [];
-              webrtcService.pendingCandidates.push(signal.candidate);
-            }
+            // Make sure we have a peer connection and add candidate
+            await webrtcService.addRemoteCandidate(signal.candidate);
           } catch (err) {
             console.error("Error adding ICE candidate:", err);
           }
